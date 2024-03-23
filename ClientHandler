@@ -1,0 +1,174 @@
+import java.io.*;
+import java.net.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class ClientHandler extends Thread {
+    private static final AtomicInteger ID_GENERATOR = new AtomicInteger();
+    private static final ConcurrentHashMap<String, ClientHandler> clients = new ConcurrentHashMap<>();
+    private static volatile String coordinatorId = null;
+
+    private Socket socket;
+    private BufferedReader in;
+    private PrintWriter out;
+    private final String clientId;
+
+    public ClientHandler(Socket socket) {
+        this.socket = socket;
+        this.clientId = String.format("%05d", ID_GENERATOR.incrementAndGet());
+        synchronized (ClientHandler.class) {
+            if (coordinatorId == null) {
+                coordinatorId = clientId;
+            }
+        }
+        clients.put(clientId, this);
+    }
+
+    @Override
+    public void run() {
+        try {
+            in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+            out = new PrintWriter(socket.getOutputStream(), true);
+
+            notifyClientOfStatus();
+
+            String input;
+            while ((input = in.readLine()) != null) {
+                input = input.trim(); // Normalize the input
+                processInput(input);
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        } finally {
+            finalizeSession();
+        }
+    }
+
+    private void notifyClientOfStatus() {
+        out.println("Assigned ID: " + clientId);
+        if (clientId.equals(coordinatorId)) {
+            out.println("You are the coordinator.");
+        } else {
+            ClientHandler coordinator = clients.get(coordinatorId);
+            if (coordinator != null) {
+                out.println("Current coordinator is: " + coordinatorId);
+            } else {
+                out.println("No coordinator currently assigned.");
+            }
+        }
+    }
+
+    private void processInput(String input) {
+        if ("/quit".equalsIgnoreCase(input)) {
+            this.quit();
+        } else if (input.toLowerCase().startsWith("/kick")) {
+            handleKickCommand(input);
+        } else if (input.toLowerCase().startsWith("/private")) {
+            handlePrivateMessage(input);
+        } else if (input.toLowerCase().startsWith("/details")) {
+            sendActiveMembersDetails();
+        } else {
+            broadcastMessage(clientId + ": " + input);
+        }
+    }
+
+    private void handleKickCommand(String input) {
+        if (!this.isCoordinator()) {
+            out.println("You are not authorized to kick users.");
+            return;
+        }
+        String[] tokens = input.split(" ", 2);
+        if (tokens.length > 1) {
+            String userId = tokens[1];
+            kickUser(userId);
+        }
+    }
+
+    private void handlePrivateMessage(String input) {
+        String[] tokens = input.split(" ", 3);
+        if (tokens.length < 3) return;
+
+        String recipientId = tokens[1];
+        String message = tokens[2];
+        sendPrivateMessage(recipientId, message);
+    }
+
+    private void sendPrivateMessage(String recipientId, String message) {
+        ClientHandler recipient = clients.get(recipientId);
+        if (recipient != null) {
+            recipient.out.println("Private message from " + clientId + ": " + message);
+            this.out.println("Private message to " + recipientId + ": " + message); // Echo to sender
+        } else {
+            this.out.println("User " + recipientId + " not found.");
+        }
+    }
+
+    private void sendActiveMembersDetails() {
+        if (!this.isCoordinator()) {
+            out.println("Only the coordinator can provide details.");
+            return;
+        }
+        StringBuilder details = new StringBuilder("Active members: ");
+        clients.forEach((id, handler) -> details.append(id).append(", "));
+        details.setLength(details.length() - 2); // Remove the last comma
+        out.println(details.toString());
+    }
+
+    private void kickUser(String userId) {
+        ClientHandler toKick = clients.get(userId);
+        if (toKick != null) {
+            toKick.out.println("You have been kicked from the chat by the coordinator.");
+            toKick.quit();
+            clients.remove(userId);
+            broadcastMessage("User " + userId + " has been kicked out by the coordinator.");
+        } else {
+            this.out.println("User " + userId + " not found.");
+        }
+    }
+
+    private void broadcastMessage(String message) {
+        clients.forEach((id, handler) -> handler.out.println(message));
+    }
+
+    private void quit() {
+        try {
+            socket.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void finalizeSession() {
+        clients.remove(clientId);
+        if (clientId.equals(coordinatorId)) {
+            assignNewCoordinator();
+        }
+        broadcastMessage("User " + clientId + " has left the chat.");
+        cleanUp();
+    }
+
+    private void cleanUp() {
+        try {
+            if (in != null) in.close();
+            if (out != null) out.close();
+            if (socket != null) socket.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private boolean isCoordinator() {
+        return clientId.equals(coordinatorId);
+    }
+
+    private void assignNewCoordinator() {
+        if (!clients.isEmpty()) {
+            coordinatorId = clients.keySet().iterator().next();
+            ClientHandler newCoordinator = clients.get(coordinatorId);
+            if (newCoordinator != null) {
+                newCoordinator.out.println("You are the new coordinator.");
+                broadcastMessage("New coordinator is: " + coordinatorId);
+            }
+        }
+    }
+}
