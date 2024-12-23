@@ -21,7 +21,7 @@ public class Client extends JFrame {
     public Client(String host, int port) {
         super("Chat Client");
 
-        // Initialize components
+        // Initialise components
         messageField = new JTextField(50);
         messageArea = new JTextArea(16, 50);
         messageArea.setEditable(false);
